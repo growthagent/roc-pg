@@ -1,6 +1,6 @@
-app [main] {
+app [main!] {
     pg: "../src/main.roc",
-    pf: platform "https://github.com/roc-lang/basic-cli/releases/download/0.15.0/SlwdbJ-3GR7uBWQo6zlmYWNYOxnvo8r6YABXD-45UOw.tar.br",
+    pf: platform "https://github.com/roc-lang/basic-cli/releases/download/0.19.0/Hj-J_zxz7V9YurCSTFcFdu6cQJie4guzsPMUi5kBYUk.tar.br",
 }
 
 import pf.Stdout
@@ -8,36 +8,41 @@ import pg.Pg.Cmd
 import pg.Pg.BasicCliClient
 import pg.Pg.Result
 
-main =
-    client = Pg.BasicCliClient.connect! {
-        host: "localhost",
-        port: 5432,
-        user: "postgres",
-        auth: None,
-        database: "postgres",
-    }
+main! = |_|
+    client = Pg.BasicCliClient.connect!(
+        {
+            host: "localhost",
+            port: 5432,
+            user: "postgres",
+            auth: None,
+            database: "postgres",
+        },
+    )?
 
-    Stdout.line! "Connected!"
+    _ = Stdout.line!("Connected!")
 
     rows =
-        Pg.Cmd.new
+        Pg.Cmd.new(
             """
             select $1 as name, $2 as age
             union all
             select 'Julio' as name, 23 as age
-            """
-            |> Pg.Cmd.bind [Pg.Cmd.str "John", Pg.Cmd.u8 32]
-            |> Pg.Cmd.expectN
-                (
-                    Pg.Result.succeed
-                        (\name -> \age ->
-                                ageStr = Num.toStr age
+            """,
+        )
+        |> Pg.Cmd.bind([Pg.Cmd.str("John"), Pg.Cmd.u8(32)])
+        |> Pg.Cmd.expect_n(
+            (
+                Pg.Result.succeed(
+                    |name|
+                        |age|
+                            age_str = Num.to_str(age)
 
-                                "$(name): $(ageStr)"
-                        )
-                    |> Pg.Result.with (Pg.Result.str "name")
-                    |> Pg.Result.with (Pg.Result.u8 "age")
+                            "${name}: ${age_str}",
                 )
-            |> Pg.BasicCliClient.command! client
+                |> Pg.Result.with(Pg.Result.str("name"))
+                |> Pg.Result.with(Pg.Result.u8("age"))
+            ),
+        )
+        |> Pg.BasicCliClient.command!(client)?
 
-    Stdout.line (Str.joinWith rows "\n")
+    Stdout.line!(Str.join_with(rows, "\n"))

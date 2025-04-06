@@ -2,12 +2,12 @@
 ## infamous "Error during alias analysis" compiler bug when used from basic-cli.
 ## This version does not.
 module [
-    connect,
-    command,
-    batch,
-    prepare,
+    connect!,
+    command!,
+    batch!,
+    prepare!,
     Error,
-    errorToStr,
+    error_to_str,
     Client,
 ]
 
@@ -24,64 +24,71 @@ import Batch
 
 Client := {
     stream : Tcp.Stream,
-    backendKey : Result Protocol.Backend.KeyData [Pending],
+    backend_key : Result Protocol.Backend.KeyData [Pending],
 }
 
-connect :
+connect! :
     {
         host : Str,
         port : U16,
         user : Str,
-        auth ? [None, Password Str],
+        auth ?? [None, Password Str],
         database : Str,
     }
-    -> Task Client _
-connect = \{ host, port, database, auth ? None, user } ->
-    stream = Tcp.connect! host port
+    => Result Client _
+connect! = |{ host, port, database, auth ?? None, user }|
+    stream = Tcp.connect!(host, port)?
 
-    Tcp.write! stream (Protocol.Frontend.startup { user, database })
+    Tcp.write!(stream, Protocol.Frontend.startup({ user, database }))?
 
-    msg, state <- messageLoop stream {
-            parameters: Dict.empty {},
-            backendKey: Err Pending,
-        }
+    message_loop!(
+        stream,
+        {
+            parameters: Dict.empty({}),
+            backend_key: Err(Pending),
+        },
+        |msg, state|
+            when msg is
+                AuthOk ->
+                    next(state)
 
-    when msg is
-        AuthOk ->
-            next state
+                AuthCleartextPassword ->
+                    when auth is
+                        None ->
+                            Err(PasswordRequired)
 
-        AuthCleartextPassword ->
-            when auth is
-                None ->
-                    Task.err PasswordRequired
+                        Password(pwd) ->
+                            # TODON: I'm throwing here
+                            Tcp.write!(stream, Protocol.Frontend.password_message(pwd))?
 
-                Password pwd ->
-                    Tcp.write! stream (Protocol.Frontend.passwordMessage pwd)
+                            next(state)
 
-                    next state
+                AuthUnsupported ->
+                    Err(UnsupportedAuth)
 
-        AuthUnsupported ->
-            Task.err UnsupportedAuth
+                BackendKeyData(backend_key) ->
+                    next({ state & backend_key: Ok(backend_key) })
 
-        BackendKeyData backendKey ->
-            next { state & backendKey: Ok backendKey }
+                ReadyForQuery(_) ->
+                    client = @Client(
+                        {
+                            stream,
+                            backend_key: state.backend_key,
+                        },
+                    )
 
-        ReadyForQuery _ ->
-            client = @Client {
-                stream,
-                backendKey: state.backendKey,
-            }
+                    return_(client)
 
-            return client
-
-        _ ->
-            unexpected msg
+                _ ->
+                    unexpected(msg),
+    )
 
 # Single command
 
-command : Cmd a err,
+command! :
+    Cmd a err,
     Client
-    -> Task
+    => Result
         a
         [
             PgExpectErr err,
@@ -91,54 +98,66 @@ command : Cmd a err,
             TcpUnexpectedEOF,
             TcpWriteErr _,
         ]
-command = \cmd, @Client { stream } ->
-    { kind, limit, bindings } = Cmd.params cmd
-    { formatCodes, paramValues } = Cmd.encodeBindings bindings
+command! = |cmd, @Client({ stream })|
+    { kind, limit, bindings } = Cmd.params(cmd)
+    { format_codes, param_values } = Cmd.encode_bindings(bindings)
 
     init =
         when kind is
-            SqlCmd sql ->
+            SqlCmd(sql) ->
                 {
-                    messages: Bytes.Encode.sequence [
-                        Protocol.Frontend.parse { sql },
-                        Protocol.Frontend.bind { formatCodes, paramValues },
-                        Protocol.Frontend.describePortal {},
-                        Protocol.Frontend.execute { limit },
-                    ],
+                    messages: Bytes.Encode.sequence(
+                        [
+                            Protocol.Frontend.parse({ sql }),
+                            Protocol.Frontend.bind({ format_codes, param_values }),
+                            Protocol.Frontend.describe_portal({}),
+                            Protocol.Frontend.execute({ limit }),
+                        ],
+                    ),
                     fields: [],
                 }
 
-            PreparedCmd prepared ->
+            PreparedCmd(prepared) ->
                 {
-                    messages: Bytes.Encode.sequence [
-                        Protocol.Frontend.bind {
-                            formatCodes,
-                            paramValues,
-                            preparedStatement: prepared.name,
-                        },
-                        Protocol.Frontend.execute { limit },
-                    ],
+                    messages: Bytes.Encode.sequence(
+                        [
+                            Protocol.Frontend.bind(
+                                {
+                                    format_codes,
+                                    param_values,
+                                    prepared_statement: prepared.name,
+                                },
+                            ),
+                            Protocol.Frontend.execute({ limit }),
+                        ],
+                    ),
                     fields: prepared.fields,
                 }
 
-    sendWithSync! stream init.messages
+    # TODON: I'm throwing here
+    send_with_sync!(stream, init.messages)?
 
-    result = readCmdResult! init.fields stream
+    # TODON: I'm throwing here
+    result = read_cmd_result!(init.fields, stream)?
 
     decoded =
-        Cmd.decode result cmd
-            |> Result.mapErr PgExpectErr
-            |> Task.fromResult!
+        Cmd.decode(result, cmd)
+        # TODON: I'm throwing here
+        |> Result.map_err(PgExpectErr)?
+    # TODON: Should be fine to just skip this?
+    # |> Task.from_result!
 
-    readReadyForQuery! stream
+    # TODON: I'm throwing here
+    read_ready_for_query!(stream)?
 
-    Task.ok decoded
+    Ok(decoded)
 
 # Batches
 
-batch : Batch a err,
+batch! :
+    Batch a err,
     Client
-    -> Task
+    => Result
         a
         [
             PgExpectErr err,
@@ -148,44 +167,59 @@ batch : Batch a err,
             TcpUnexpectedEOF,
             TcpWriteErr _,
         ]
-batch = \cmdBatch, @Client { stream } ->
-    { commands, seenSql, decode: batchDecode } = Batch.params cmdBatch
+batch! = |cmd_batch, @Client({ stream })|
+    { commands, seen_sql, decode: batch_decode } = Batch.params(cmd_batch)
 
-    reusedIndexes =
-        seenSql
-        |> Dict.walk (Set.empty {}) \set, _, { index, reused } ->
-            if reused then
-                set |> Set.insert index
-            else
-                set
+    reused_indexes =
+        seen_sql
+        |> Dict.walk(
+            Set.empty({}),
+            |set, _, { index, reused }|
+                if reused then
+                    set |> Set.insert(index)
+                else
+                    set,
+        )
 
     inits =
         commands
-        |> List.mapWithIndex (\cmd, ix -> initBatchedCmd reusedIndexes cmd ix)
+        |> List.map_with_index(|cmd, ix| init_batched_cmd(reused_indexes, cmd, ix))
 
-    commandMessages =
+    command_messages =
         inits
-        |> List.map .messages
+        |> List.map(.messages)
         |> Bytes.Encode.sequence
 
-    closeMessages =
-        reusedIndexes
-        |> Set.toList
-        |> List.map \ix ->
-            Protocol.Frontend.closeStatement { name: Batch.reuseName ix }
+    close_messages =
+        reused_indexes
+        |> Set.to_list
+        |> List.map(
+            |ix|
+                Protocol.Frontend.close_statement({ name: Batch.reuse_name(ix) }),
+        )
         |> Bytes.Encode.sequence
 
-    messages = commandMessages |> List.concat closeMessages
-    sendWithSync! stream messages
+    messages = command_messages |> List.concat(close_messages)
+    # TODON: I'm throwing here
+    send_with_sync!(stream, messages)?
 
-    Task.loop
+    loop!(
         {
             remaining: inits,
-            results: List.withCapacity (List.len commands),
-        }
-        (\state -> batchReadStep batchDecode stream state)
+            results: List.with_capacity(List.len(commands)),
+        },
+        |state| batch_read_step!(batch_decode, stream, state),
+    )
 
-initBatchedCmd : Set U64,
+loop! : state, (state => Result [Step state, Done done] err) => Result done err
+loop! = |state, fn!|
+    when fn!(state) is
+        Err(err) -> Err(err)
+        Ok(Done(done)) -> Ok(done)
+        Ok(Step(next_)) -> loop!(next_, fn!)
+
+init_batched_cmd :
+    Set U64,
     Batch.BatchedCmd,
     U64
     -> {
@@ -196,138 +230,162 @@ initBatchedCmd : Set U64,
             Known (List Pg.Result.RowField),
         ],
     }
-initBatchedCmd = \reusedIndexes, cmd, cmdIndex ->
-    { formatCodes, paramValues } = Cmd.encodeBindings cmd.bindings
+init_batched_cmd = |reused_indexes, cmd, cmd_index|
+    { format_codes, param_values } = Cmd.encode_bindings(cmd.bindings)
 
     when cmd.kind is
-        SqlCmd sql ->
+        SqlCmd(sql) ->
             name =
-                if Set.contains reusedIndexes cmdIndex then
-                    Batch.reuseName cmdIndex
+                if Set.contains(reused_indexes, cmd_index) then
+                    Batch.reuse_name(cmd_index)
                 else
                     ""
 
             {
-                messages: Bytes.Encode.sequence [
-                    Protocol.Frontend.parse { sql, name },
-                    Protocol.Frontend.bind {
-                        formatCodes,
-                        paramValues,
-                        preparedStatement: name,
-                    },
-                    Protocol.Frontend.describePortal {},
-                    Protocol.Frontend.execute { limit: cmd.limit },
-                ],
+                messages: Bytes.Encode.sequence(
+                    [
+                        Protocol.Frontend.parse({ sql, name }),
+                        Protocol.Frontend.bind(
+                            {
+                                format_codes,
+                                param_values,
+                                prepared_statement: name,
+                            },
+                        ),
+                        Protocol.Frontend.describe_portal({}),
+                        Protocol.Frontend.execute({ limit: cmd.limit }),
+                    ],
+                ),
                 fields: Describe,
             }
 
-        ReuseSql index ->
+        ReuseSql(index) ->
             {
-                messages: Bytes.Encode.sequence [
-                    Protocol.Frontend.bind {
-                        formatCodes,
-                        paramValues,
-                        preparedStatement: Batch.reuseName index,
-                    },
-                    Protocol.Frontend.execute { limit: cmd.limit },
-                ],
-                fields: ReuseFrom index,
+                messages: Bytes.Encode.sequence(
+                    [
+                        Protocol.Frontend.bind(
+                            {
+                                format_codes,
+                                param_values,
+                                prepared_statement: Batch.reuse_name(index),
+                            },
+                        ),
+                        Protocol.Frontend.execute({ limit: cmd.limit }),
+                    ],
+                ),
+                fields: ReuseFrom(index),
             }
 
-        PreparedCmd prepared ->
+        PreparedCmd(prepared) ->
             {
-                messages: Bytes.Encode.sequence [
-                    Protocol.Frontend.bind {
-                        formatCodes,
-                        paramValues,
-                        preparedStatement: prepared.name,
-                    },
-                    Protocol.Frontend.execute { limit: cmd.limit },
-                ],
-                fields: Known prepared.fields,
+                messages: Bytes.Encode.sequence(
+                    [
+                        Protocol.Frontend.bind(
+                            {
+                                format_codes,
+                                param_values,
+                                prepared_statement: prepared.name,
+                            },
+                        ),
+                        Protocol.Frontend.execute({ limit: cmd.limit }),
+                    ],
+                ),
+                fields: Known(prepared.fields),
             }
 
-batchReadStep = \batchDecode, stream, { remaining, results } ->
+batch_read_step! = |batch_decode, stream, { remaining, results }|
     when remaining is
         [] ->
-            when batchDecode results is
-                Ok { value } ->
-                    readReadyForQuery! stream
-                    return value
+            when batch_decode(results) is
+                Ok({ value }) ->
+                    # TODON: I'm throwing here
+                    read_ready_for_query!(stream)?
+                    return_(value)
 
-                Err (MissingCmdResult index) ->
-                    Task.err (PgProtoErr (MissingBatchedCmdResult index))
+                Err(MissingCmdResult(index)) ->
+                    Err(PgProtoErr(MissingBatchedCmdResult(index)))
 
-                Err (ExpectErr err) ->
-                    Task.err (PgExpectErr err)
+                Err(ExpectErr(err)) ->
+                    Err(PgExpectErr(err))
 
         [first, ..] ->
-            fields = batchedCmdFields! results first.fields
-            result = readCmdResult! fields stream
+            fields = batched_cmd_fields(results, first.fields)?
+            # TODON: I'm throwing here
+            result = read_cmd_result!(fields, stream)?
 
-            next {
-                remaining: remaining |> List.dropFirst 1,
-                results: results |> List.append result,
-            }
+            next(
+                {
+                    remaining: remaining |> List.drop_first(1),
+                    results: results |> List.append(result),
+                },
+            )
 
-batchedCmdFields = \results, fieldsMethod ->
-    when fieldsMethod is
+batched_cmd_fields = |results, fields_method|
+    when fields_method is
         Describe ->
-            Task.ok []
+            Ok([])
 
-        ReuseFrom index ->
-            when List.get results index is
-                Ok result ->
-                    Task.ok (Pg.Result.fields result)
+        ReuseFrom(index) ->
+            when List.get(results, index) is
+                Ok(result) ->
+                    Ok(Pg.Result.fields(result))
 
-                Err OutOfBounds ->
+                Err(OutOfBounds) ->
                     # TODO: better name
-                    Task.err (PgProtoErr ResultOutOfBounds)
+                    Err(PgProtoErr(ResultOutOfBounds))
 
-        Known fields ->
-            Task.ok fields
+        Known(fields) ->
+            Ok(fields)
 
 # Execute helpers
 
-readCmdResult = \initFields, stream ->
-    msg, state <- messageLoop stream {
-            fields: initFields,
+read_cmd_result! = |init_fields, stream|
+    message_loop!(
+        stream,
+        {
+            fields: init_fields,
             rows: [],
-        }
+        },
+        |msg, state|
+            when msg is
+                ParseComplete | BindComplete | ParameterDescription | NoData ->
+                    next(state)
 
-    when msg is
-        ParseComplete | BindComplete | ParameterDescription | NoData ->
-            next state
+                RowDescription(fields) ->
+                    next({ state & fields: fields })
 
-        RowDescription fields ->
-            next { state & fields: fields }
+                DataRow(row) ->
+                    next({ state & rows: List.append(state.rows, row) })
 
-        DataRow row ->
-            next { state & rows: List.append state.rows row }
+                CommandComplete(_) | EmptyQueryResponse | PortalSuspended ->
+                    return_(Pg.Result.create(state))
 
-        CommandComplete _ | EmptyQueryResponse | PortalSuspended ->
-            return (Pg.Result.create state)
+                _ ->
+                    unexpected(msg),
+    )
 
-        _ ->
-            unexpected msg
+read_ready_for_query! = |stream|
+    message_loop!(
+        stream,
+        {},
+        |msg, {}|
+            when msg is
+                CloseComplete ->
+                    next({})
 
-readReadyForQuery = \stream ->
-    msg, {} <- messageLoop stream {}
+                ReadyForQuery(_) ->
+                    return_({})
 
-    when msg is
-        CloseComplete ->
-            next {}
-
-        ReadyForQuery _ ->
-            return {}
-
-        _ ->
-            unexpected msg
+                _ ->
+                    unexpected(msg),
+    )
 
 # Prepared Statements
 
-prepare : Str,{ name : Str, client : Client }
-    -> Task
+prepare! :
+    Str,
+    { name : Str, client : Client }
+    => Result
         (Cmd CmdResult [])
         [
             PgErr Error,
@@ -336,117 +394,133 @@ prepare : Str,{ name : Str, client : Client }
             TcpUnexpectedEOF,
             TcpWriteErr _,
         ]
-prepare = \sql, { name, client } ->
-    (@Client { stream }) = client
+prepare! = |sql, { name, client }|
+    @Client({ stream }) = client
 
-    parseAndDescribe = Bytes.Encode.sequence [
-        Protocol.Frontend.parse { sql, name },
-        Protocol.Frontend.describeStatement { name },
-        Protocol.Frontend.sync,
-    ]
+    parse_and_describe = Bytes.Encode.sequence(
+        [
+            Protocol.Frontend.parse({ sql, name }),
+            Protocol.Frontend.describe_statement({ name }),
+            Protocol.Frontend.sync,
+        ],
+    )
 
-    Tcp.write! stream parseAndDescribe
+    # TODON: I'm throwing here
+    Tcp.write!(stream, parse_and_describe)?
 
-    msg, state <- messageLoop stream []
+    message_loop!(
+        stream,
+        [],
+        |msg, state|
+            when msg is
+                ParseComplete | ParameterDescription | NoData ->
+                    next(state)
 
-    when msg is
-        ParseComplete | ParameterDescription | NoData ->
-            next state
+                RowDescription(fields) ->
+                    next(fields)
 
-        RowDescription fields ->
-            next fields
+                ReadyForQuery(_) ->
+                    return_(Cmd.prepared({ name, fields: state }))
 
-        ReadyForQuery _ ->
-            return (Cmd.prepared { name, fields: state })
-
-        _ ->
-            unexpected msg
+                _ ->
+                    unexpected(msg),
+    )
 
 # Errors
 
 Error : Protocol.Backend.Error
 
-errorToStr : Error -> Str
-errorToStr = \err ->
-    addField = \str, name, result ->
+error_to_str : Error -> Str
+error_to_str = |err|
+    add_field = |str, name, result|
         when result is
-            Ok value ->
-                "$(str)\n$(name): $(value)"
+            Ok(value) ->
+                "${str}\n${name}: ${value}"
 
-            Err {} ->
+            Err({}) ->
                 str
 
-    fieldsStr =
+    fields_str =
         ""
-        |> addField "Detail" err.detail
-        |> addField "Hint" err.hint
-        |> addField "Position" (err.position |> Result.map Num.toStr)
-        |> addField "Internal Position" (err.internalPosition |> Result.map Num.toStr)
-        |> addField "Internal Query" err.internalQuery
-        |> addField "Where" err.ewhere
-        |> addField "Schema" err.schemaName
-        |> addField "Table" err.tableName
-        |> addField "Data type" err.dataTypeName
-        |> addField "Constraint" err.constraintName
-        |> addField "File" err.file
-        |> addField "Line" err.line
-        |> addField "Routine" err.line
+        |> add_field("Detail", err.detail)
+        |> add_field("Hint", err.hint)
+        |> add_field("Position", (err.position |> Result.map_ok(Num.to_str)))
+        |> add_field("Internal Position", (err.internal_position |> Result.map_ok(Num.to_str)))
+        |> add_field("Internal Query", err.internal_query)
+        |> add_field("Where", err.ewhere)
+        |> add_field("Schema", err.schema_name)
+        |> add_field("Table", err.table_name)
+        |> add_field("Data type", err.data_type_name)
+        |> add_field("Constraint", err.constraint_name)
+        |> add_field("File", err.file)
+        |> add_field("Line", err.line)
+        |> add_field("Routine", err.line)
 
-    "$(err.localizedSeverity) ($(err.code)): $(err.message)\n$(fieldsStr)"
+    "${err.localized_severity} (${err.code}): ${err.message}\n${fields_str}"
     |> Str.trim
 
 # Helpers
 
-readMessage : Tcp.Stream -> Task Protocol.Backend.Message [PgProtoErr _, TcpReadErr _, TcpUnexpectedEOF]
-readMessage = \stream ->
-    headerBytes = Tcp.readExactly! stream 5
+read_message! : Tcp.Stream => Result Protocol.Backend.Message [PgProtoErr _, TcpReadErr _, TcpUnexpectedEOF]
+read_message! = |stream|
+    # TODON: I'm throwing here
+    header_bytes = Tcp.read_exactly!(stream, 5)?
 
-    protoDecode = \bytes, dec ->
-        decode bytes dec
-        |> Result.mapErr PgProtoErr
-        |> Task.fromResult
+    proto_decode = |bytes, dec|
+        decode(bytes, dec)
+        |> Result.map_err(PgProtoErr)
+    # TODON: Should be safe to skip this?
+    # |> Task.from_result
 
-    meta = headerBytes |> protoDecode! Protocol.Backend.header
+    # TODON: I'm throwing here
+    meta = header_bytes |> proto_decode(Protocol.Backend.header)?
 
     if meta.len > 0 then
-        payload = Tcp.readExactly! stream (Num.toU64 meta.len)
-        protoDecode payload (Protocol.Backend.message meta.msgType)
+        # TODON: I'm throwing here
+        payload = Tcp.read_exactly!(stream, Num.to_u64(meta.len))?
+        proto_decode(payload, Protocol.Backend.message(meta.msg_type))
     else
-        protoDecode [] (Protocol.Backend.message meta.msgType)
+        proto_decode([], Protocol.Backend.message(meta.msg_type))
 
-messageLoop : Tcp.Stream, state, (Protocol.Backend.Message, state -> Task [Done done, Step state] _) -> Task done _
-messageLoop = \stream, initState, stepFn ->
-    state <- Task.loop initState
+message_loop! : Tcp.Stream, state, (Protocol.Backend.Message, state => Result [Done done, Step state] _) => Result done _
+message_loop! = |stream, init_state, step_fn!|
+    loop!(
+        init_state,
+        |state|
+            # TODON: I'm throwing here
+            message = read_message!(stream)?
 
-    message = readMessage! stream
+            when message is
+                ErrorResponse(error) ->
+                    Err(PgErr(error))
 
-    when message is
-        ErrorResponse error ->
-            Task.err (PgErr error)
+                ParameterStatus(_) ->
+                    Ok(Step(state))
 
-        ParameterStatus _ ->
-            Task.ok (Step state)
+                _ ->
+                    step_fn!(message, state),
+    )
 
-        _ ->
-            stepFn message state
+next : a -> Result [Step a] *
+next = |state|
+    Ok(Step(state))
 
-next : a -> Task [Step a] *
-next = \state ->
-    Task.ok (Step state)
+return_ : a -> Result [Done a] *
+return_ = |result|
+    Ok(Done(result))
 
-return : a -> Task [Done a] *
-return = \result ->
-    Task.ok (Done result)
+# TODON: Doesn't _have_ to be impure
+unexpected : a -> Result * [PgProtoErr [UnexpectedMsg a]]
+unexpected = |msg|
+    Err(PgProtoErr(UnexpectedMsg(msg)))
 
-unexpected : a -> Task * [PgProtoErr [UnexpectedMsg a]]
-unexpected = \msg ->
-    Task.err (PgProtoErr (UnexpectedMsg msg))
+send_with_sync! : Tcp.Stream, List U8 => Result {} _
+send_with_sync! = |stream, bytes|
+    content = Bytes.Encode.sequence(
+        [
+            bytes,
+            Protocol.Frontend.sync,
+        ],
+    )
 
-sendWithSync : Tcp.Stream, List U8 -> Task {} _
-sendWithSync = \stream, bytes ->
-    content = Bytes.Encode.sequence [
-        bytes,
-        Protocol.Frontend.sync,
-    ]
-
-    Tcp.write stream content
+    Tcp.write!(stream, content)
