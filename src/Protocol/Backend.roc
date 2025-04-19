@@ -22,6 +22,7 @@ import Bytes.Decode exposing [
     c_str,
     take,
 ]
+import Maybe exposing [Maybe]
 
 Message : [
     AuthOk,
@@ -37,7 +38,7 @@ Message : [
     NoData,
     RowDescription (List RowField),
     ParameterDescription (List ParameterField),
-    DataRow (List (List U8)),
+    DataRow (List (Maybe (List U8))),
     PortalSuspended,
     CommandComplete Str,
     EmptyQueryResponse,
@@ -475,10 +476,11 @@ data_row =
                 await(
                     i32,
                     |value_len|
+                        # A negative length means the value is NULL
                         if value_len == -1 then
-                            succeed([])
+                            succeed(Nothing)
                         else
-                            take(Num.to_u64(value_len), |x| x),
+                            take(Num.to_u64(value_len), |x| Just(x)),
                 ),
             )
             |> map(DataRow),

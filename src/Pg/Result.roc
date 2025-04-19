@@ -6,6 +6,7 @@ module [
     apply,
     bool,
     create,
+    custom,
     dec,
     decode,
     f32,
@@ -17,6 +18,23 @@ module [
     i64,
     i8,
     len,
+    map,
+    maybe_bool,
+    maybe_custom,
+    maybe_dec,
+    maybe_f32,
+    maybe_f64,
+    maybe_i128,
+    maybe_i16,
+    maybe_i32,
+    maybe_i64,
+    maybe_i8,
+    maybe_str,
+    maybe_u128,
+    maybe_u16,
+    maybe_u32,
+    maybe_u64,
+    maybe_u8,
     record_builder,
     rows,
     str,
@@ -30,13 +48,14 @@ module [
 ]
 
 import Protocol.Backend
+import Maybe exposing [Maybe]
 
 RowField : Protocol.Backend.RowField
 ParameterField : Protocol.Backend.ParameterField
 
 CmdResult := {
     fields : List RowField,
-    rows : List (List (List U8)),
+    rows : List (List (Maybe (List U8))),
     parameters : List ParameterField,
 }
 
@@ -45,7 +64,7 @@ create = @CmdResult
 fields : CmdResult -> List RowField
 fields = |@CmdResult(result)| result.fields
 
-rows : CmdResult -> List (List (List U8))
+rows : CmdResult -> List (List (Maybe (List U8)))
 rows = |@CmdResult(result)| result.rows
 
 len : CmdResult -> U64
@@ -56,7 +75,7 @@ Decode a err :=
     List RowField
     ->
     Result
-        (List (List U8) -> Result a [FieldNotFound Str]err)
+        (List (Maybe (List U8)) -> Result a [FieldNotFound Str]err)
         [FieldNotFound Str]
 
 decode : CmdResult, Decode a err -> Result (List a) [FieldNotFound Str]err
@@ -68,35 +87,75 @@ decode = |@CmdResult(r), @Decode(get_decode)|
         Err(FieldNotFound(name)) ->
             Err(FieldNotFound(name))
 
-str = decoder(Ok)
+maybe = |fn|
+    decoder(
+        |m_str|
+            when m_str is
+                Just(s) -> Ok(Just(fn(s)?))
+                Nothing -> Ok(Nothing),
+    )
 
-u8 = decoder(Str.to_u8)
+non_maybe = |fn|
+    decoder(
+        |m_str|
+            when m_str is
+                Just(s) -> fn(s)
+                Nothing -> Err(UnexpectedNull),
+    )
 
-u16 = decoder(Str.to_u16)
+str = non_maybe(Ok)
+maybe_str = maybe(Ok)
 
-u32 = decoder(Str.to_u32)
+u8 = non_maybe(Str.to_u8)
+maybe_u8 = maybe(Str.to_u8)
 
-u64 = decoder(Str.to_u64)
+u16 = non_maybe(Str.to_u16)
+maybe_u16 = maybe(Str.to_u16)
 
-u128 = decoder(Str.to_u128)
+u32 = non_maybe(Str.to_u32)
+maybe_u32 = maybe(Str.to_u32)
 
-i8 = decoder(Str.to_i8)
+u64 = non_maybe(Str.to_u64)
+maybe_u64 = maybe(Str.to_u64)
 
-i16 = decoder(Str.to_i16)
+u128 = non_maybe(Str.to_u128)
+maybe_u128 = maybe(Str.to_u128)
 
-i32 = decoder(Str.to_i32)
+i8 = non_maybe(Str.to_i8)
+maybe_i8 = maybe(Str.to_i8)
 
-i64 = decoder(Str.to_i64)
+i16 = non_maybe(Str.to_i16)
+maybe_i16 = maybe(Str.to_i16)
 
-i128 = decoder(Str.to_i128)
+i32 = non_maybe(Str.to_i32)
+maybe_i32 = maybe(Str.to_i32)
 
-f32 = decoder(Str.to_f32)
+i64 = non_maybe(Str.to_i64)
+maybe_i64 = maybe(Str.to_i64)
 
-f64 = decoder(Str.to_f64)
+i128 = non_maybe(Str.to_i128)
+maybe_i128 = maybe(Str.to_i128)
 
-dec = decoder(Str.to_dec)
+f32 = non_maybe(Str.to_f32)
+maybe_f32 = maybe(Str.to_f32)
 
-bool = decoder(
+f64 = non_maybe(Str.to_f64)
+maybe_f64 = maybe(Str.to_f64)
+
+dec = non_maybe(Str.to_dec)
+maybe_dec = maybe(Str.to_dec)
+
+custom = |name, fn| non_maybe(fn)(name)
+maybe_custom = |name, fn| maybe(fn)(name)
+
+bool = non_maybe(
+    |v|
+        when v is
+            "t" -> Ok(Bool.true)
+            "f" -> Ok(Bool.false)
+            _ -> Err(InvalidBoolStr),
+)
+maybe_bool = maybe(
     |v|
         when v is
             "t" -> Ok(Bool.true)
@@ -113,9 +172,13 @@ decoder = |fn|
                         Ok(
                             |row|
                                 when List.get(row, index) is
-                                    Ok(bytes) ->
-                                        str_value = Str.from_utf8(bytes)?
-                                        fn(str_value)
+                                    Ok(m_bytes) ->
+                                        m_str =
+                                            when m_bytes is
+                                                Just(bytes) -> Just(Str.from_utf8(bytes)?)
+                                                Nothing -> Nothing
+
+                                        Result.map_err(fn(m_str), |error| DecodeErr({ column: name, error }))
 
                                     Err(OutOfBounds) ->
                                         Err(FieldNotFound(name)),
@@ -156,6 +219,8 @@ succeed = |value|
 with = |a, b| map2(a, b, |fn, val| fn(val))
 
 apply = |a| |fn| with(fn, a)
+
+map = |a, fn| with(succeed(fn), a)
 
 ## Use with Roc's [Record Builder](https://www.roc-lang.org/tutorial#record-builder)
 ## syntax to build records of your returned rows:
