@@ -1,16 +1,16 @@
 app [main!] {
-    pg: "../src/main.roc",
     pf: platform "https://github.com/roc-lang/basic-cli/releases/download/0.19.0/Hj-J_zxz7V9YurCSTFcFdu6cQJie4guzsPMUi5kBYUk.tar.br",
+    pg: "../src/main.roc",
 }
 
 import pf.Stdout
 import pg.Pg.Cmd
-import pg.Pg.BasicCliClient
+import pg.Pg.Client
 import pg.Pg.Batch
 import pg.Pg.Result
 
 main! = |_|
-    client = Pg.BasicCliClient.connect!(
+    client = Pg.Client.connect!(
         {
             host: "localhost",
             port: 5432,
@@ -44,7 +44,7 @@ main! = |_|
                 |> Pg.Cmd.expect1(Pg.Result.u8("value"))
             ),
         )
-        |> Pg.BasicCliClient.batch!(client)?
+        |> Pg.Client.batch!(client)?
 
     str42 = Num.to_str(result_with.forty_two)
     _ = Stdout.line!("${result_with.hi} ${str42}")
@@ -58,7 +58,7 @@ main! = |_|
                 |> Pg.Cmd.expect1(Pg.Result.u8("value")),
         )
         |> Pg.Batch.sequence
-        |> Pg.BasicCliClient.batch!(client)?
+        |> Pg.Client.batch!(client)?
 
     result_seq_str = result_seq |> List.map(Num.to_str) |> Str.join_with(", ")
 

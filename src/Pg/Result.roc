@@ -1,39 +1,43 @@
 module [
     CmdResult,
-    RowField,
-    create,
-    len,
-    fields,
-    rows,
-    decode,
     Decode,
-    str,
-    u8,
-    u16,
-    u32,
-    u64,
-    u128,
-    i8,
+    ParameterField,
+    RowField,
+    apply,
+    bool,
+    create,
+    dec,
+    decode,
+    f32,
+    f64,
+    fields,
+    i128,
     i16,
     i32,
     i64,
-    i128,
-    f32,
-    f64,
-    dec,
-    bool,
-    with,
-    apply,
+    i8,
+    len,
+    record_builder,
+    rows,
+    str,
     succeed,
+    u128,
+    u16,
+    u32,
+    u64,
+    u8,
+    with,
 ]
 
 import Protocol.Backend
 
 RowField : Protocol.Backend.RowField
+ParameterField : Protocol.Backend.ParameterField
 
 CmdResult := {
     fields : List RowField,
     rows : List (List (List U8)),
+    parameters : List ParameterField,
 }
 
 create = @CmdResult
@@ -52,9 +56,7 @@ Decode a err :=
     List RowField
     ->
     Result
-        (List (List U8)
-            ->
-            Result a [FieldNotFound Str]err)
+        (List (List U8) -> Result a [FieldNotFound Str]err)
         [FieldNotFound Str]
 
 decode : CmdResult, Decode a err -> Result (List a) [FieldNotFound Str]err
@@ -80,7 +82,7 @@ u128 = decoder(Str.to_u128)
 
 i8 = decoder(Str.to_i8)
 
-i16 = decoder(Str.to_i8)
+i16 = decoder(Str.to_i16)
 
 i32 = decoder(Str.to_i32)
 
@@ -112,12 +114,8 @@ decoder = |fn|
                             |row|
                                 when List.get(row, index) is
                                     Ok(bytes) ->
-                                        when Str.from_utf8(bytes) is
-                                            Ok(str_value) ->
-                                                fn(str_value)
-
-                                            Err(err) ->
-                                                Err(err)
+                                        str_value = Str.from_utf8(bytes)?
+                                        fn(str_value)
 
                                     Err(OutOfBounds) ->
                                         Err(FieldNotFound(name)),
@@ -158,3 +156,18 @@ succeed = |value|
 with = |a, b| map2(a, b, |fn, val| fn(val))
 
 apply = |a| |fn| with(fn, a)
+
+## Use with Roc's [Record Builder](https://www.roc-lang.org/tutorial#record-builder)
+## syntax to build records of your returned rows:
+##
+## ```
+## Pg.Cmd.expect_n(
+##     { Pg.Result.record_builder <-
+##         name: Pg.Result.str("name"),
+##         age: Pg.Result.u8("age"),
+##     },
+## )
+## ```
+# NOTE: `record_builder` is an alias of `map2` simply to increase its
+# discoverability and user-friendliness for its intended use-case.
+record_builder = map2

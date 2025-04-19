@@ -24,14 +24,6 @@
             buildInputs = with pkgs;
               [
                 rocFull
-                zig
-                rustc
-                rustfmt
-                rust-analyzer
-                cargo
-                lld
-                wasm-pack
-                simple-http-server
                 inotify-tools
                 watchexec
               ];

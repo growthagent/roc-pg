@@ -1,11 +1,12 @@
 module [
+    Error,
+    KeyData,
+    Message,
+    ParameterField,
+    RowField,
+    Status,
     header,
     message,
-    Message,
-    KeyData,
-    Status,
-    RowField,
-    Error,
 ]
 
 import Bytes.Decode exposing [
@@ -32,9 +33,10 @@ Message : [
     ErrorResponse Error,
     ParseComplete,
     BindComplete,
+    NoticeResponse (List { code : U8, value : Str }),
     NoData,
     RowDescription (List RowField),
-    ParameterDescription,
+    ParameterDescription (List ParameterField),
     DataRow (List (List U8)),
     PortalSuspended,
     CommandComplete Str,
@@ -78,6 +80,9 @@ message = |msg_type|
         '2' ->
             succeed(BindComplete)
 
+        'N' ->
+            notice_response
+
         'n' ->
             succeed(NoData)
 
@@ -85,7 +90,7 @@ message = |msg_type|
             row_description
 
         't' ->
-            succeed(ParameterDescription)
+            parameter_description
 
         'D' ->
             data_row
@@ -166,6 +171,32 @@ ready_for_query =
 
                 _ ->
                     fail(UnrecognizedBackendStatus(status)),
+    )
+
+read_notice_responses : Decode (List { code : U8, value : Str }) _
+read_notice_responses =
+    loop(
+        [],
+        |collected|
+            await(
+                u8,
+                |code|
+                    if code == 0 then
+                        succeed(Done(collected))
+                    else
+                        map(
+                            c_str,
+                            |value|
+                                Loop(List.append(collected, { code, value })),
+                        ),
+            ),
+    )
+
+notice_response =
+    await(
+        read_notice_responses,
+        |notices|
+            succeed(NoticeResponse(notices)),
     )
 
 Error : {
@@ -296,6 +327,7 @@ ErrorSeverity : [
     Log,
 ]
 
+decode_severity : Str -> Result ErrorSeverity [InvalidSeverity Str]
 decode_severity = |str|
     when str is
         "ERROR" ->
@@ -354,6 +386,30 @@ RowField : {
     type_modifier : I32,
     format_code : I16,
 }
+
+ParameterField : {
+    data_type_oid : I32,
+}
+
+parameter_description : Decode Message _
+parameter_description =
+    await(
+        i16,
+        |field_count|
+            if field_count == 0 then
+                succeed(ParameterDescription([]))
+            else
+                fixed_list(field_count, parameter_field)
+                |> map(ParameterDescription),
+    )
+
+parameter_field : Decode ParameterField _
+parameter_field =
+    await(
+        i32,
+        |data_type_oid|
+            succeed({ data_type_oid }),
+    )
 
 row_description : Decode Message _
 row_description =

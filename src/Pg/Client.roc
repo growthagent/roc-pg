@@ -1,24 +1,24 @@
 module [
-    connect!,
-    command!,
-    batch!,
-    prepare!,
-    Error,
-    error_to_str,
     Client,
+    Error,
+    batch!,
+    command!,
+    connect!,
+    error_to_str,
+    prepare!,
 ]
 
+import Batch
+import Bytes.Decode exposing [decode]
+import Bytes.Encode
+import Cmd
+import Pg.Batch exposing [Batch]
+import Pg.Cmd exposing [Cmd]
+import Pg.Result exposing [CmdResult]
 import Protocol.Backend
 import Protocol.Frontend
-import Bytes.Encode
-import Bytes.Decode exposing [decode]
-import Pg.Result exposing [CmdResult]
-import Pg.Cmd exposing [Cmd]
-import Pg.Batch exposing [Batch]
-import pf.Tcp
 import pf.Stderr
-import Cmd
-import Batch
+import pf.Tcp
 
 Client := {
     stream : Tcp.Stream,
@@ -322,11 +322,15 @@ read_cmd_result! = |init_fields, stream|
         {
             fields: init_fields,
             rows: [],
+            parameters: [],
         },
         |msg, state|
             when msg is
-                ParseComplete | BindComplete | ParameterDescription | NoData ->
+                ParseComplete | BindComplete | NoData | NoticeResponse _ ->
                     next(state)
+
+                ParameterDescription(parameters) ->
+                    next({ state & parameters: parameters })
 
                 RowDescription(fields) ->
                     next({ state & fields: fields })
@@ -386,17 +390,20 @@ prepare! = |sql, { name, client }|
 
     message_loop!(
         stream,
-        [],
+        { fields: [], parameters: [] },
         |msg, state|
             when msg is
-                ParseComplete | ParameterDescription | NoData ->
+                ParseComplete | NoData ->
                     next(state)
 
+                ParameterDescription parameters ->
+                    next({ state & parameters: parameters })
+
                 RowDescription(fields) ->
-                    next(fields)
+                    next({ state & fields: fields })
 
                 ReadyForQuery(_) ->
-                    return_(Cmd.prepared({ name, fields: state }))
+                    return_(Cmd.prepared({ name, fields: state.fields, parameters: state.parameters }))
 
                 _ ->
                     unexpected(msg),
