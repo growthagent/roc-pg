@@ -24,16 +24,17 @@ main! = |_|
     rows =
         Pg.Cmd.new(
             """
-            select $1 as name, $2 as age
+            select $1 as name, $2 as age, $3 as hobby
             union all
-            select 'Julio' as name, 23 as age
+            select 'Julio' as name, 23 as age, 'Diablo II' as hobby
             """,
         )
-        |> Pg.Cmd.bind([Pg.Cmd.str("John"), Pg.Cmd.u8(32)])
+        |> Pg.Cmd.bind([Pg.Cmd.str("John"), Pg.Cmd.u8(32), Pg.Cmd.maybe_str(Nothing)])
         |> Pg.Cmd.expect_n(
             { Pg.Result.record_builder <-
                 name: Pg.Result.str("name"),
                 age: Pg.Result.u8("age"),
+                hobby: Pg.Result.maybe_str("hobby"),
             },
         )
         |> Pg.Client.command!(client)?

@@ -15,6 +15,19 @@ module [
     i8,
     inspect,
     map,
+    maybe_f32,
+    maybe_f64,
+    maybe_i128,
+    maybe_i16,
+    maybe_i32,
+    maybe_i64,
+    maybe_i8,
+    maybe_str,
+    maybe_u128,
+    maybe_u16,
+    maybe_u32,
+    maybe_u64,
+    maybe_u8,
     new,
     null,
     str,
@@ -27,6 +40,7 @@ module [
 ]
 
 import Cmd
+import Maybe exposing [Maybe]
 import Pg.Result exposing [CmdResult]
 
 Cmd a err : Cmd.Cmd a err
@@ -109,6 +123,13 @@ bind : Cmd a err, List Binding -> Cmd a err
 bind = |cmd, bindings|
     Cmd.bind(cmd, (bindings |> List.map(|@Binding(binding)| binding)))
 
+maybe : (a -> Binding) -> (Maybe a -> Binding)
+maybe = |f|
+    |m|
+        when m is
+            Just(a) -> f(a)
+            Nothing -> null
+
 null : Binding
 null = @Binding(Null)
 
@@ -116,18 +137,34 @@ str : Str -> Binding
 str = |value|
     @Binding(Text(value))
 
+maybe_str = maybe(str)
+
 u8 = num
 u16 = num
 u32 = num
 u64 = num
 u128 = num
+maybe_u8 = maybe(num)
+maybe_u16 = maybe(num)
+maybe_u32 = maybe(num)
+maybe_u64 = maybe(num)
+maybe_u128 = maybe(num)
+
 i8 = num
 i16 = num
 i32 = num
 i64 = num
 i128 = num
+maybe_i8 = maybe(num)
+maybe_i16 = maybe(num)
+maybe_i32 = maybe(num)
+maybe_i64 = maybe(num)
+maybe_i128 = maybe(num)
+
 f32 = num
 f64 = num
+maybe_f32 = maybe(num)
+maybe_f64 = maybe(num)
 
 num : Num * -> Binding
 num = |value|
@@ -137,6 +174,10 @@ bool : Bool -> Binding
 bool = |value|
     @Binding(Binary([(if value then 1 else 0)]))
 
+maybe_bool = maybe(bool)
+
 bytes : List U8 -> Binding
 bytes = |value|
     @Binding(Binary(value))
+
+maybe_bytes = maybe(bytes)
