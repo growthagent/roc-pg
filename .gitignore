@@ -1,2 +1,13 @@
+## Built binaries with no extension
+# Ignore all
+*
+# Un-ignore files with extensions
+!*.*
+# Un-ignore directories
+!*/
+## End of Built binaries with no extensions
+
 *.roc-format-failed
 report.xml
+.envrc
+.direnv
