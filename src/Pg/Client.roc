@@ -131,13 +131,13 @@ command! = |cmd, @Client({ stream })|
 
     send_with_sync!(stream, init.messages)?
 
-    result = read_cmd_result!(init.fields, stream)?
-
-    decoded = Cmd.decode(result, cmd) ? PgExpectErr
+    result =
+        read_cmd_result!(init.fields, stream)
+        |> Result.try(|r| Cmd.decode(r, cmd) |> Result.map_err(PgExpectErr))
 
     read_ready_for_query!(stream)?
 
-    Ok(decoded)
+    result
 
 # Batches
 
@@ -464,9 +464,7 @@ loop! : state, (state => Result [Step state, Done done] err) => Result done err
 loop! = |state, fn!|
     when fn!(state) is
         Err(err) -> Err(err)
-        Ok(Done(done)) ->
-            Ok(done)
-
+        Ok(Done(done)) -> Ok(done)
         Ok(Step(next_)) -> loop!(next_, fn!)
 
 message_loop! : Tcp.Stream, state, (Protocol.Backend.Message, state => Result [Done done, Step state] _) => Result done _
