@@ -4,6 +4,7 @@ module [
     bind,
     bool,
     bytes,
+    dec,
     expect1,
     expect_n,
     f32,
@@ -15,6 +16,7 @@ module [
     i8,
     inspect,
     map,
+    maybe_dec,
     maybe_f32,
     maybe_f64,
     maybe_i128,
@@ -165,6 +167,9 @@ f32 = num
 f64 = num
 maybe_f32 = maybe(num)
 maybe_f64 = maybe(num)
+
+dec = num
+maybe_dec = maybe(num)
 
 num : Num * -> Binding
 num = |value|
