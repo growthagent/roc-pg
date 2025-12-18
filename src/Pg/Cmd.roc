@@ -16,6 +16,8 @@ module [
     i8,
     inspect,
     map,
+    maybe_bool,
+    maybe_bytes,
     maybe_dec,
     maybe_f32,
     maybe_f64,
