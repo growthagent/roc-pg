@@ -17,7 +17,6 @@ import Pg.Cmd exposing [Cmd]
 import Pg.Result exposing [CmdResult]
 import Protocol.Backend
 import Protocol.Frontend
-import pf.Stderr
 import pf.Tcp
 
 Client := {
@@ -475,7 +474,7 @@ message_loop! = |stream, init_state, step_fn!|
             message = read_message!(stream)?
             when message is
                 ErrorResponse(error) ->
-                    _ = Stderr.line!("ERROR from roc-pg: ${Inspect.to_str(error)}")
+                    # _ = Stderr.line!("ERROR from roc-pg: ${Inspect.to_str(error)}")
                     Err(PgErr(error))
 
                 ParameterStatus(_) ->
